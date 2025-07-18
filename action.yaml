@@ -79,7 +79,8 @@ runs:
     - id: summary
       env:
         VERSION: ${{ steps.meta.outputs.json && fromJSON(steps.meta.outputs.json).tags[0] || '' }}
+        PUBLISHED: ${{ inputs.push == 'true' && 'Published' || 'Built' }}
       shell: bash
       run: |
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-        echo -e "### Version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+        echo -e "### $PUBLISHED Version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
