@@ -1,73 +1,85 @@
 name: docker-bake
-description: An action to build and publish docker images using docker bake
-
+description: Build and Publish Images with Docker Bake.
 inputs:
-  cache-branches:
-    description: List of branches that trigger publishing to cache. Defaults to the repository default branch.
-    default: '${{ github.event.repository.default_branch }}'
-  file:
-    description: Path to Docker Bake file(s)
-    default: './docker-bake.hcl'
-  force-push:
-    description: When 'true', force push to registry even if current branch is not in push-branches
+  disable-cache:
+    description: When 'true', disable all caching. Usually 'true' when building from PRs/non-default branches.
     default: 'false'
-  push-branches:
-    description: List of branches that trigger publishing of images to registry. Defaults to the repository default branch.
-    default: '${{ github.event.repository.default_branch }}'
+  files:
+    description: Newline-delimited docker bake file path(s).
+    default: './docker-bake.hcl'
+  load:
+    description: When 'true', built images are loaded into the docker daemon.
+    default: 'false'
+  push:
+    description: When 'true', built images are published to their registry.
+    default: 'true'
+  quiet:
+    description: When 'true', exclude build output from logs and only print errors.
+    default: 'false'
   targets:
-    description: List of bake targets
+    description: Space-delimited bake targets
     default: 'ci'
-    required: false
+  upload-build-record:
+    description: When 'true', upload the build record archive.
+    default: 'false'
 
 outputs:
   metadata:
     description: Build result metadata
     value: ${{ steps.bake.outputs.metadata }}
+  version:
+    description: Version (first 'fixed' [non-rolling] image tag)
+    value: ${{ steps.summary.outputs.version }}
 
 runs:
   using: "composite"
   steps:
     - name: Setup QEMU
-      uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+      uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
 
     - name: Setup Buildx
-      uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5 # v3.8.0
-
+      uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      with:
+        version: 'v0.25.0'
+        cleanup: false
+      
     - name: Gather Image Labels and Tags
       id: meta
-      uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96 # v5.6.1
+      uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+      env:
+        DOCKER_METADATA_SET_OUTPUT_ENV: false
+        DOCKER_METADATA_PR_HEAD_SHA: ${{ github.event_name == 'pull_request' }}
       with:
         tags: |
           type=schedule,priority=10
           type=ref,event=tag,priority=9
-          type=sha,format=short,prefix=commit-,priority=8
-          type=raw,value=build-{{date 'YYYYMMDD-HHmmss'}},priority=6
+          type=raw,value={{date 'YYYYMMDD_HHmmss'}},priority=8
+          type=sha,format=short,prefix=ref-,priority=6
           type=ref,event=pr,priority=5
           type=ref,event=branch,prefix=branch-,priority=5
 
-    - id: input-parser
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const cacheBranches = '${{ inputs.cache-branches }}'.split(/[\n,]/);
-          const pushBranches = '${{ inputs.push-branches }}'.split(/[\n,]/);
-          core.setOutput('cache-branches', JSON.stringify(cacheBranches));
-          core.setOutput('push-branches', JSON.stringify(pushBranches));
-          core.setOutput('cache', cacheBranches.includes('${{ github.ref_name }}'));
-          core.setOutput('push', '${{ inputs.force-push }}' == 'true' || pushBranches.includes('${{ github.ref_name }}'));
-
-    - name: Build and Publish
+    - name: Bake Image
       id: bake
-      uses: docker/bake-action@3fc70e1131fee40a422dd8dd0ff22014ae20a1f3 # v5.11.0
+      uses: docker/bake-action@37816e747588cb137173af99ab33873600c46ea8 # v6.8.0
       env:
-        DOCKER_BUILD_RECORD_UPLOAD: 'false'
+        BUILDKIT_PROGRESS: ${{ inputs.quiet == 'true' && 'quiet' || 'plain' }}
+        DOCKER_BUILD_RECORD_RETENTION_DAYS: '1'
+        DOCKER_BUILD_RECORD_UPLOAD: ${{ inputs.upload-build-record == 'true' && 'true' || 'false' }}
       with:
-        push: ${{ steps.input-parser.outputs.push }}
+        source: .
+        load: ${{ inputs.load == 'true' && 'true' || 'false' }}
+        push: ${{ inputs.push == 'true' && 'true' || 'false' }}
         files: |
-          ${{ inputs.file }}
+          ${{ inputs.files }}
           ${{ steps.meta.outputs.bake-file }}
         targets: '${{ inputs.targets }}'
-        # we disable all cache (*.cache-to=) if not on a cache branch so as not to pollute it
         set: |
-          ${{ steps.input-parser.outputs.cache == 'true' && '' || '*.cache-to=' }} 
-     
+          ${{ inputs.disable-cache == 'true' && '*.cache-to=' || '' }}
+
+    - id: summary
+      env:
+        VERSION: ${{ steps.meta.outputs.json && fromJSON(steps.meta.outputs.json).tags[0] || '' }}
+      shell: bash
+      run: |
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo -e "### Version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
